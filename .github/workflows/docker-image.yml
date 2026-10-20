@@ -1,0 +1,37 @@
+name: Docker Image CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Docker Image
+        run: docker build -t elzimio/redes2web:flaskv2 .
+
+      - name: Test Flask application
+        run: |
+          docker run --rm elzimio/redes2web:flaskv2 python -c \
+            "from main import app; r = app.test_client().get('/'); assert r.status_code == 200; assert r.data == b'pagina de prueba'; print('Flask OK: HTTP 200')"
+
+      - name: Docker Login
+        if: github.event_name != 'pull_request'
+        env:
+          DOCKER_USER: ${{ secrets.DOCKER_USER }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+        run: printf '%s' "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USER" --password-stdin
+
+      - name: Push Docker Image
+        if: github.event_name != 'pull_request'
+        run: docker push elzimio/redes2web:flaskv2
