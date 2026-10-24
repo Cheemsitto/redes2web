@@ -1,4 +1,4 @@
-name: Docker Image CI
+name: CI CD en la nube
 
 on:
   push:
@@ -10,9 +10,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: redes2web-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: Construir probar y publicar
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -35,3 +40,59 @@ jobs:
       - name: Push Docker Image
         if: github.event_name != 'pull_request'
         run: docker push elzimio/redes2web:flaskv2
+
+      - name: Exportar respuesta Flask para GitHub Pages
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p _site
+          docker run --rm elzimio/redes2web:flaskv2 python -c \
+            "from main import app; r = app.test_client().get('/'); assert r.status_code == 200; print(r.get_data(as_text=True), end='')" > _site/index.html
+          printf '%s' "$GITHUB_SHA" > _site/version.txt
+
+      - name: Subir sitio verificado
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    name: Desplegar en GitHub Pages
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publicar sitio en la nube
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  verify:
+    name: Verificar sitio publico
+    needs: deploy
+    runs-on: ubuntu-24.04
+    env:
+      SITE_URL: ${{ needs.deploy.outputs.page_url }}
+    steps:
+      - name: Comprobar HTTP contenido y version desplegada
+        run: |
+          for attempt in $(seq 1 24); do
+            status=$(curl -sS -o /tmp/page.html -w '%{http_code}' "$SITE_URL" || true)
+            version=$(curl -fsS "${SITE_URL}version.txt?sha=${GITHUB_SHA}" || true)
+            if [ "$status" = 200 ] && [ "$(cat /tmp/page.html)" = 'pagina de prueba' ] && [ "$version" = "$GITHUB_SHA" ]; then
+              echo "Sitio publico OK: HTTP 200"
+              echo "Contenido OK: pagina de prueba"
+              echo "Version desplegada: $version"
+              echo "URL: $SITE_URL"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo 'No se pudo verificar el despliegue publicado'
+          exit 1
